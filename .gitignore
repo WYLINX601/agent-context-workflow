@@ -1,0 +1,26 @@
+# Local credentials and runtime state
+.env
+.env.*
+*.token
+*.secret
+*.key
+*.pem
+*.cookie
+*.db
+*.sqlite
+*.sqlite3
+sessions/
+memory/
+memories/
+pairing/
+
+# Local configuration and generated runtime output
+.context-local/
+.hermes/
+.multica/
+dist/
+build/
+*.log
+
+# Go build output
+plugins/multica-hermes-bridge/multica-hermes-gateway

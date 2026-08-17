@@ -1,0 +1,35 @@
+version: 1
+
+gateway:
+  url: ws://127.0.0.1:9119/api/ws
+  status_url: http://127.0.0.1:9119/api/status
+  connect_timeout: 5s
+  rpc_timeout: 30s
+  turn_timeout: 2h
+  allow_remote: false
+
+session:
+  source: multica
+  # Optional Hermes profile. Empty means use Hermes' default profile.
+  profile: ""
+  cwd_policy: multica
+  id_strategy: mapped
+  replay_history: false
+
+concurrency:
+  exclusive_turn_per_gateway: true
+
+permissions:
+  mode: multica
+
+mcp:
+  mode: hermes_native
+
+logging:
+  level: info
+  log_prompts: false
+  log_tool_outputs: false
+
+# Optional local-only state path. Keep credentials out of this file when it is
+# Keep credentials out of version control; prefer MHG_GATEWAY_TOKEN_FILE for a local token.
+# state_db: ~/.local/state/multica-hermes-gateway/state.db

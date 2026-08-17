@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  go-acp-adapter:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/multica-hermes-bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - run: go test ./...
+      - run: go vet ./...

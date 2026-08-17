@@ -1,0 +1,110 @@
+schema_version: 1
+squad_id: product-solution-squad
+display_name: Product Solution Squad
+status: example
+purpose: "将组织需求拆解为可评审的产品方案、技术方案和验证计划。"
+
+lead:
+  agent_id: product-lead
+  responsibility: "澄清目标、拆解任务、控制交接、汇总结果并标记人工决策点。"
+  context_scope:
+    read:
+      - "需求/**"
+      - "context/PROJECT_CONTEXT.md"
+      - "context/constraints.md"
+    write:
+      - "需求/**/context/**"
+      - "需求/**/输出/**"
+      - "events/**"
+
+members:
+  - agent_id: product-strategy
+    role: product-strategy
+    responsibility: "问题定义、用户场景、范围、优先级和验收标准。"
+    tools:
+      - project-context-workflow
+      - issue-comments
+      - structured-writing
+    outputs:
+      - problem-framing
+      - product-solution
+
+  - agent_id: solution-architect
+    role: technical-architecture
+    responsibility: "系统边界、组件关系、依赖、风险和实施路径。"
+    tools:
+      - project-context-workflow
+      - repository-inspection
+      - architecture-diagram
+    outputs:
+      - architecture-proposal
+      - dependency-and-risk-review
+
+  - agent_id: interaction-designer
+    role: interaction-design
+    responsibility: "用户流程、交互状态、协作入口和体验约束。"
+    tools:
+      - project-context-workflow
+      - flow-mapping
+      - structured-writing
+    outputs:
+      - user-flow
+      - interaction-notes
+
+  - agent_id: solution-reviewer
+    role: validation-review
+    responsibility: "检查方案与需求、约束、权限和验收标准的一致性。"
+    tools:
+      - project-context-workflow
+      - checklist-review
+    outputs:
+      - acceptance-checklist
+      - open-issues
+
+workflow:
+  - stage: intake
+    owner: product-lead
+    action: "读取需求与最小项目 Context，补齐目标、范围和验收。"
+  - stage: decomposition
+    owner: product-lead
+    action: "按专业职责拆解子任务，分别授予最小 Context。"
+  - stage: parallel-analysis
+    owner: product-lead
+    action: "产品、架构和交互角色并行分析，结果写回原任务链。"
+  - stage: review
+    owner: solution-reviewer
+    action: "检查冲突、风险、遗漏和不可验证的结论。"
+  - stage: human-decision
+    owner: human-reviewer
+    action: "确认方向、关键取舍、公开边界和最终方案。"
+  - stage: writeback
+    owner: product-lead
+    action: "区分产物、决定、事件和知识候选后写回。"
+
+handoff:
+  required_fields:
+    - task_id
+    - objective
+    - acceptance_criteria
+    - context_slice
+    - expected_output
+    - blocked_by
+  return_to: product-lead
+
+review_gates:
+  - human_confirmation_required: true
+    when:
+      - "改变需求目标或范围"
+      - "引入新的外部工具或数据源"
+      - "发布到公共仓库"
+      - "将经验晋升为 Skill、Context 或 Workflow"
+
+fallback:
+  on_context_conflict: blocked
+  on_missing_evidence: request-human-review
+  on_tool_failure: record-and-propose-alternative
+
+public_example:
+  credentials: forbidden
+  private_runtime_state: forbidden
+  images: omitted
