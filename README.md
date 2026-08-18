@@ -43,7 +43,7 @@ flowchart LR
 | 跨场域痛点 | 为什么换工具、换 Agent 后工作会断裂？ | 工作对象不能依赖单一对话 | 需求、任务、问题定义 |
 | Context 底座 | Agent 需要读取什么才能继续工作？ | 最小加载、事实有源 | 项目 Context、需求 Context、任务 Context |
 | 个人助手 | 哪些任务适合人与 Agent 直接共创？ | 边讨论、边判断、边操作真实产物 | 草案、分析、代码、文档 |
-| Agent 小队 | 复杂需求如何拆给多个专业角色？ | Lead 负责拆解、交接和汇总 | 产品方案、架构方案、交互流程、验证清单 |
+| Agent 小队 | 复杂需求如何拆给多个专业角色？ | 产品方案架构师负责拆解、交接和汇总 | 用户／市场洞察、方案总纲、PRD、红队评审 |
 | 人的决策中心 | 哪些事情不能由 Agent 自行决定？ | 关键取舍、权限、发布和能力晋升由人确认 | 决定、评审意见、发布授权 |
 | 能力进化闭环 | 如何把一次任务变成下一次能力？ | 候选先行、审核后写回 | Skill、Context、Agent 小队 Workflow |
 
@@ -160,7 +160,7 @@ project/
 | 协作中心 | 个人共创工作台 | Issue 或同等的可审计任务对象 |
 | 组织方式 | Agent 直接读取最小 Context 并操作真实产物 | Lead Agent 拆解任务，专业 Agent 并行分析 |
 | 人的参与 | 持续共创和即时判断 | 在目标、关键取舍、风险、发布和验收节点介入 |
-| 主要结果 | 分析、草案、代码、文档和候选结论 | 产品方案、技术架构、交互流程、验证清单和待决策项 |
+| 主要结果 | 分析、草案、代码、文档和候选结论 | 用户／市场洞察、方案总纲、PRD、红队风险和待决策项 |
 | 写回方式 | 结果先进入任务或候选 | Lead 汇总后回到原 Issue，再按类型写回 |
 
 ### 4.1 个人助手：直接共创工作台
@@ -179,36 +179,36 @@ project/
 
 Multica 产品方案小队是本仓库的核心公开演示场景。它以任务或 Issue 为协作中心，由 Lead Agent 负责目标、拆解、交接、汇总和人工决策点；专业 Agent 只获得与职责相关的最小 Context。
 
-参考成员包括：
+公开示例使用 Multica 中“产品方案小队”的五个角色：
 
-- **product-lead**：澄清目标、拆解任务、控制交接、汇总结果并标记人工决策点；
-- **product-strategy**：问题定义、用户场景、范围、优先级和验收标准；
-- **solution-architect**：系统边界、组件关系、依赖、风险和实施路径；
-- **interaction-designer**：用户流程、交互状态、协作入口和体验约束；
-- **solution-reviewer**：检查方案与需求、约束、权限和验收标准的一致性。
+- **产品方案架构师**：队长，负责目标、方案总纲、优先级、路线图、交接和汇总；
+- **用户研究员**：负责用户痛点、场景、人物、旅程、JTBD 和证据置信度；
+- **竞品与市场分析师**：负责市场、细分、竞品、定位、规模和外部证据；
+- **PRD 撰写师**：负责 PRD、用户故事、功能规格和验收标准；
+- **红队评审官**：负责前置验尸、风险、假设和最低成本验证建议。
 
-这不是固定的组织编制。使用者应根据自己的需求、角色、工具、数据边界和人工审核规则生成新的小队配置。
+这不是一套独立的控制面。Multica 负责 Issue、角色路由、Prompt/Workflow、状态、评论和人工评估节点；本仓库只提供可脱敏、可迁移的结构化参考配置。小队不覆盖视觉设计、高保真交互、研发实现、运营和发布执行。
 
 ### 4.3 小队协作流程
 
 ~~~mermaid
 flowchart TD
     Intake["需求 / Issue"]
-    Lead["product-lead<br/>澄清目标与验收"]
-    Strategy["product-strategy<br/>问题与方案"]
-    Architect["solution-architect<br/>架构与风险"]
-    Designer["interaction-designer<br/>流程与体验"]
-    Review["solution-reviewer<br/>证据、约束与验收"]
-    Human["human-reviewer<br/>关键决策"]
+    Lead["产品方案架构师<br/>目标、方案总纲与汇总"]
+    Research["用户研究员<br/>用户问题与证据"]
+    Market["竞品与市场分析师<br/>市场、竞品与定位"]
+    PRD["PRD 撰写师<br/>用户故事与验收"]
+    Review["红队评审官<br/>风险、假设与验证"]
+    Human["用户评估<br/>方向、风险与最终定稿"]
     Writeback["回写产物、决定、事件与知识候选"]
 
     Intake --> Lead
-    Lead --> Strategy
-    Lead --> Architect
-    Lead --> Designer
-    Strategy --> Review
-    Architect --> Review
-    Designer --> Review
+    Lead --> Research
+    Lead --> Market
+    Research --> Lead
+    Market --> Lead
+    Lead --> PRD
+    PRD --> Review
     Review --> Human
     Human --> Writeback
     Writeback --> Intake
@@ -224,6 +224,24 @@ flowchart TD
 - blocked_by。
 
 当人对结果不满意时，可以继续在原 Issue 留评论，重新加载同一任务 Context 迭代；需要深入讨论时，也可以唤起对应专家并通过“@”带入当前 Issue 上下文。
+
+### 用户流线
+
+~~~text
+用户提出需求
+  → 个人助手装配最小 Context
+  → Multica 创建 Issue
+  → Lead 澄清目标、验收和范围
+  → 用户研究与竞品／市场分析
+  → 形成产品方案总纲
+  → 用户评估方案方向
+  → PRD 细化与红队评审
+  → 用户评估风险、取舍和最终方案
+  → 回写项目产物、决定、事件和能力候选
+  → 下一条需求复用已确认的 Context 和 Workflow
+~~~
+
+在这条流线上，Multica 是小队的控制面，Context Skill 是事实和权限底座，人的决策中心通过小队 Prompt/Workflow 中的评估节点发挥作用，Go ACP Adapter 只承担 ACP 与本地 Hermes Gateway 的协议桥接。
 
 ## 五、从需求到能力的八步工作流
 
@@ -314,6 +332,7 @@ Agent 可以提出建议、生成候选和执行已授权动作，但不能把�
 | Context Contract | 层级、访问矩阵、新鲜度和写回规则 | [contracts/context-contract/](contracts/context-contract/) |
 | Task Context Schema | 任务 Context 的字段约束和示例 | [contracts/task-context/](contracts/task-context/) |
 | 产品方案小队配置 | Multica 产品方案小队的脱敏参考配置 | [configs/squads/](configs/squads/) |
+| Multica 控制面边界 | 小队控制面、Context、CLI、Adapter 与人的职责边界 | [docs/multica-control-plane.md](docs/multica-control-plane.md) |
 | Go ACP Adapter | Multica ACP 与本地 Hermes Gateway 的公开桥接实现 | [plugins/multica-hermes-bridge/](plugins/multica-hermes-bridge/) |
 | 产品方案小队示例 | 从需求进入小队、评审和写回的最小演示 | [examples/product-solution-squad/](examples/product-solution-squad/) |
 | 自进化 Skill 预留 | 后续能力进化实现边界和缺口 | [skills/self-evolution/](skills/self-evolution/) |
@@ -350,7 +369,9 @@ cp -R project-context-workflow ~/.codex/skills/
 
 ### 3. 配置产品方案小队
 
-复制 [产品方案小队示例配置](configs/squads/product-solution-squad.example.yaml)，按需求调整 Lead、专业角色、工具、输出、交接字段、评审门和失败回退。
+在 Multica 中创建或选择产品方案小队，配置产品方案架构师为 Lead，并设置四个专业角色、Prompt/Workflow、阶段产出、交接字段、人工评估节点和失败回退。仓库中的 [产品方案小队示例配置](configs/squads/product-solution-squad.example.yaml) 是公开结构参考，不保证可以直接导入 Multica。
+
+具体冷启动顺序见 [工作流配置说明](docs/workflow.md)；控制面职责见 [Multica 控制面边界](docs/multica-control-plane.md)。
 
 ### 4. 构建公开 Go ACP Adapter
 
@@ -371,6 +392,8 @@ Multica Custom Runtime
 ~~~
 
 Adapter 只负责协议适配和任务桥接，不托管个人 Profile、Memory、Session 或凭据。同一个活动 Session 不应由多个适配路径同时驱动。
+
+Adapter 不创建或调度 Multica 小队，也不管理 Issue、评论和状态；非 Multica 内的 Agent 读取 Issue 时通过当前可用的 Multica CLI 完成。
 
 ## 十、公开边界与安全
 
@@ -406,12 +429,13 @@ Adapter 只负责协议适配和任务桥接，不托管个人 Profile、Memory�
 - 产品方案小队的最小流程示例；
 - 发布边界、安全说明和 CI 基础结构。
 
-### 正在补齐
+### 当前边界与后续补充
 
-- 可执行版自进化 Skill：候选、审核、晋升、回滚和测试闭环；
-- 组织提交需求后自动生成 Agent 配置的完整控制面或编译器；
-- Multica 产品方案小队的真实端到端运行演示；
-- 更多可复现实例和经人工复核的公开图片。
+- 自进化 Skill 目前只保留目录和说明，后续补充候选、审核、晋升、回滚和测试闭环；
+- 小队运行控制面仍在 Multica，本仓库不实现独立的控制面或配置编译器；
+- 当前公开小队示例已按实际 Multica 产品方案小队完成角色和流程脱敏；
+- 展示图片和其他素材暂不放入仓库，后续由项目维护者补充；
+- 发布前自动检查和完整端到端演示暂不纳入本阶段。
 
 本仓库当前是基础结构和公开参考实现。Python Bridge、个人运行配置、Profile Memory、Session、凭据和敏感图片不属于当前公开范围。
 

@@ -2,109 +2,231 @@ schema_version: 1
 squad_id: product-solution-squad
 display_name: Product Solution Squad
 status: example
-purpose: "将组织需求拆解为可评审的产品方案、技术方案和验证计划。"
+source: "脱敏摘录自 Multica 产品方案小队；不包含真实 agent ID、运行时、凭据或私有数据。"
+purpose: "把已确认或待验证的业务机会转化为可决策、可执行、可验证的产品方案。"
+
+scope:
+  includes:
+    - "用户与市场洞察"
+    - "产品方案、优先级与路线图"
+    - "PRD、用户故事和验收标准"
+    - "指标与验证假设的协作交接"
+    - "红队评审、放行条件和最终定稿"
+  excludes:
+    - "视觉设计和高保真原型"
+    - "研发实现和正式上线执行"
+    - "运营投放"
 
 lead:
-  agent_id: product-lead
-  responsibility: "澄清目标、拆解任务、控制交接、汇总结果并标记人工决策点。"
+  agent_id: product-solution-architect
+  source_role: "PM方案-产品方案架构师"
+  responsibility: "接收需求，定义问题与成功标准，统筹分工，做范围和优先级取舍，输出方案总纲并负责最终定稿。"
+  instructions_summary:
+    - "用结果→机会→方案→实验串联产品发现与方案设计。"
+    - "把用户研究、市场分析、PRD 和评审结果汇总为一条方案主线。"
+    - "不替 PRD 撰写师完成全部细节，不替红队评审官做独立批判。"
+  outputs:
+    - solution-outline
+    - priority-and-roadmap
+    - final-solution-package
   context_scope:
     read:
       - "需求/**"
-      - "context/PROJECT_CONTEXT.md"
-      - "context/constraints.md"
+      - "context/**"
+      - "task-context/**"
     write:
-      - "需求/**/context/**"
       - "需求/**/输出/**"
+      - "需求/**/context/**"
       - "events/**"
 
 members:
-  - agent_id: product-strategy
-    role: product-strategy
-    responsibility: "问题定义、用户场景、范围、优先级和验收标准。"
-    tools:
-      - project-context-workflow
-      - issue-comments
-      - structured-writing
+  - agent_id: product-user-researcher
+    source_role: "PM方案-用户研究员"
+    role: user-research
+    responsibility: "挖掘用户需求、痛点和使用场景，构建画像与旅程，提炼 JTBD，并区分事实、推断和置信度。"
+    boundaries:
+      - "只负责问题空间，不做方案决策、竞品分析或 PRD。"
+      - "没有证据的内容必须标记为假设或待验证。"
+    skills:
+      - customer-journey-map
+      - interview-script
+      - summarize-interview
+      - user-personas
+      - user-segmentation
     outputs:
-      - problem-framing
-      - product-solution
+      - user-insights
+      - user-scenarios
+      - evidence-and-confidence
 
-  - agent_id: solution-architect
-    role: technical-architecture
-    responsibility: "系统边界、组件关系、依赖、风险和实施路径。"
-    tools:
-      - project-context-workflow
-      - repository-inspection
-      - architecture-diagram
+  - agent_id: product-market-analyst
+    source_role: "PM方案-竞品与市场分析师"
+    role: market-and-competitor-analysis
+    responsibility: "分析市场趋势、细分市场、竞品优劣势、定位和差异化机会，标注来源与时点。"
+    boundaries:
+      - "不替产品方案架构师做最终方案决策。"
+      - "事实、推测和待验证信息必须分开。"
+    skills:
+      - competitor-analysis
+      - market-segments
+      - market-sizing
+      - pestle-analysis
+      - porters-five-forces
+      - positioning-ideas
+      - swot-analysis
     outputs:
-      - architecture-proposal
-      - dependency-and-risk-review
+      - market-and-competitor-brief
+      - differentiation-opportunities
+      - positioning-hypotheses
 
-  - agent_id: interaction-designer
-    role: interaction-design
-    responsibility: "用户流程、交互状态、协作入口和体验约束。"
-    tools:
-      - project-context-workflow
-      - flow-mapping
-      - structured-writing
+  - agent_id: product-prd-writer
+    source_role: "PM方案-PRD撰写师"
+    role: prd-and-acceptance
+    responsibility: "把已经确定的方案细化为 PRD、用户故事、验收标准和测试场景。"
+    boundaries:
+      - "不重新决定方案范围；发现缺口时回传产品方案架构师。"
+      - "不负责指标设计。"
+    skills:
+      - create-prd
+      - job-stories
+      - test-scenarios
+      - user-stories
+      - wwas
     outputs:
-      - user-flow
-      - interaction-notes
+      - prd
+      - user-stories
+      - acceptance-criteria
+      - test-scenarios
 
-  - agent_id: solution-reviewer
-    role: validation-review
-    responsibility: "检查方案与需求、约束、权限和验收标准的一致性。"
-    tools:
-      - project-context-workflow
-      - checklist-review
+  - agent_id: product-red-team-reviewer
+    source_role: "PM方案-红队评审官"
+    role: red-team-review
+    responsibility: "对方案进行对抗式审查，识别逻辑漏洞、边界场景、可行性风险和未验证假设。"
+    boundaries:
+      - "只找问题并给出建议，不直接改写方案或替队长拍板。"
+      - "风险建议按最廉价验证排序。"
+    skills:
+      - identify-assumptions-existing
+      - pre-mortem
+      - prioritize-assumptions
+      - strategy-red-team
     outputs:
-      - acceptance-checklist
-      - open-issues
+      - risk-register
+      - assumption-priority-matrix
+      - cheapest-validation-plan
 
 workflow:
   - stage: intake
-    owner: product-lead
-    action: "读取需求与最小项目 Context，补齐目标、范围和验收。"
-  - stage: decomposition
-    owner: product-lead
-    action: "按专业职责拆解子任务，分别授予最小 Context。"
-  - stage: parallel-analysis
-    owner: product-lead
-    action: "产品、架构和交互角色并行分析，结果写回原任务链。"
-  - stage: review
-    owner: solution-reviewer
-    action: "检查冲突、风险、遗漏和不可验证的结论。"
-  - stage: human-decision
-    owner: human-reviewer
-    action: "确认方向、关键取舍、公开边界和最终方案。"
+    owner: product-solution-architect
+    action: "澄清业务目标、目标用户、问题、约束、已有材料、决策时点和成功标准。"
+    outputs:
+      - problem-statement
+      - success-criteria
+      - open-questions
+    human_review: optional
+
+  - stage: discovery
+    owner: product-solution-architect
+    action: "按需并行委派用户研究和市场/竞品分析，形成机会清单并标注证据等级。"
+    parallel_members:
+      - product-user-researcher
+      - product-market-analyst
+    outputs:
+      - user-insights
+      - market-and-competitor-brief
+      - evidence-and-unknowns
+    human_review: optional
+
+  - stage: solution-outline
+    owner: product-solution-architect
+    action: "用目标—机会—方案—验证串联洞察，形成价值主张、核心流程、模块边界、非目标、依赖和优先级。"
+    outputs:
+      - solution-outline
+      - priority-and-roadmap
+      - decisions-needed
+    human_review: required
+    review_prompt: "请用户评估方案方向、范围、优先级、非目标和关键取舍。"
+
+  - stage: delivery-detail
+    owner: product-solution-architect
+    action: "将已确认的方案交给 PRD 撰写师细化；需要指标或研发交接时，形成明确的外部交接。"
+    assigned_members:
+      - product-prd-writer
+    outputs:
+      - prd
+      - user-stories
+      - acceptance-criteria
+      - test-scenarios
+    human_review: optional
+
+  - stage: red-team-review
+    owner: product-red-team-reviewer
+    action: "独立审查价值、可用性、可行性、商业与风险假设，提出放行、有条件放行或不放行意见。"
+    outputs:
+      - risk-register
+      - assumption-priority-matrix
+      - release-conditions
+    human_review: required
+    review_prompt: "请用户核查关键风险、未验证假设和是否满足放行条件。"
+
+  - stage: finalize
+    owner: product-solution-architect
+    action: "逐项处理评审意见，形成最终方案、取舍记录、待验证项、风险和下一步。"
+    outputs:
+      - final-solution-package
+      - decision-log
+      - validation-backlog
+      - next-step
+    human_review: required
+    review_prompt: "请用户确认最终方案、未解决风险和后续动作。"
+
   - stage: writeback
-    owner: product-lead
-    action: "区分产物、决定、事件和知识候选后写回。"
+    owner: product-solution-architect
+    action: "区分项目产物、已确认决定、执行事件和可复用方法候选后写回项目工作区。"
+    outputs:
+      - project-artifact
+      - approved-decision
+      - execution-event
+      - capability-candidate
+    human_review: required
 
 handoff:
   required_fields:
     - task_id
     - objective
-    - acceptance_criteria
-    - context_slice
+    - input_context
     - expected_output
+    - output_format
+    - evidence_or_assumptions
     - blocked_by
-  return_to: product-lead
+  return_to: product-solution-architect
+  external_handoffs:
+    - "视觉设计或高保真原型"
+    - "研发实现和技术交接"
+    - "运营投放"
 
 review_gates:
-  - human_confirmation_required: true
-    when:
-      - "改变需求目标或范围"
-      - "引入新的外部工具或数据源"
-      - "发布到公共仓库"
-      - "将经验晋升为 Skill、Context 或 Workflow"
+  - gate: solution-direction
+    human_confirmation_required: true
+    trigger: "方案总纲、范围、优先级或非目标形成后"
+  - gate: red-team-release
+    human_confirmation_required: true
+    trigger: "红队评审完成并形成放行条件后"
+  - gate: final-delivery
+    human_confirmation_required: true
+    trigger: "最终方案包、风险和下一步形成后"
+  - gate: writeback-promotion
+    human_confirmation_required: true
+    trigger: "将结果写入项目事实或形成可复用能力候选前"
 
 fallback:
-  on_context_conflict: blocked
-  on_missing_evidence: request-human-review
-  on_tool_failure: record-and-propose-alternative
+  on_context_conflict: "暂停当前阶段，回到产品方案架构师并请求用户裁决。"
+  on_missing_evidence: "标记为待验证，提出最廉价验证，不用推测补齐。"
+  on_out_of_scope: "保留当前任务结果，转交对应角色或小队。"
+  on_tool_failure: "记录失败，提出替代路径，不自动扩大权限。"
 
 public_example:
   credentials: forbidden
   private_runtime_state: forbidden
+  personal_agent_ids: omitted
   images: omitted
+  control_plane: "由 Multica 负责；本仓库只提供配置和接入边界。"
