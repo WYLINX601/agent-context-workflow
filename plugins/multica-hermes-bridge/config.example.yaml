@@ -17,7 +17,9 @@ session:
   replay_history: false
 
 concurrency:
-  exclusive_turn_per_gateway: true
+  # profile: different Profiles may turn concurrently; endpoint: serialize
+  # every Profile sharing this Gateway endpoint.
+  exclusive_turn_scope: profile
 
 permissions:
   mode: multica
@@ -30,6 +32,22 @@ logging:
   log_prompts: false
   log_tool_outputs: false
 
+supervisor:
+  enabled: true
+  # Supervisor is a separate long-lived process; ACP only connects over this
+  # local endpoint. On Windows this value is normalized to a named pipe.
+  endpoint: ~/.local/state/multica-hermes-gateway/supervisor.sock
+  runtime_db: ~/.local/state/multica-hermes-gateway/runtime.db
+  hermes_executable: hermes
+  # shared reuses one Gateway endpoint; isolated owns one Gateway per Profile.
+  scope: shared
+  heartbeat_interval: 10s
+  lease_ttl: 30s
+  health_interval: 5s
+  start_timeout: 20s
+  shutdown_grace: 5s
+  isolated_idle_timeout: 10m
+
 # Optional local-only state path. Keep credentials out of this file when it is
-# Keep credentials out of version control; prefer MHG_GATEWAY_TOKEN_FILE for a local token.
+# copied into Workbench; prefer MHG_GATEWAY_TOKEN_FILE for a local token.
 # state_db: ~/.local/state/multica-hermes-gateway/state.db

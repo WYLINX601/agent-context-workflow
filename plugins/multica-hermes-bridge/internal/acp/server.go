@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/protocol"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/protocol"
 )
 
 const (

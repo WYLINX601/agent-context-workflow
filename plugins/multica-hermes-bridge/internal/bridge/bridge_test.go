@@ -9,28 +9,56 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/acp"
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/config"
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/hermes"
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/state"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/acp"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/config"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/hermes"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/state"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/supervisor"
 )
 
 type fakeGateway struct {
-	mu      sync.Mutex
-	calls   []string
-	params  map[string][]map[string]any
-	events  chan hermes.Event
-	running bool
-	resumed bool
+	mu            sync.Mutex
+	calls         []string
+	params        map[string][]map[string]any
+	events        chan hermes.Event
+	running       bool
+	resumed       bool
+	profileExists bool
+	profileErr    error
 }
 
+type fakeRuntimeController struct {
+	info     supervisor.RuntimeInfo
+	err      error
+	acquires int
+	pins     int
+}
+
+func (f *fakeRuntimeController) AcquireRuntime(context.Context, supervisor.AcquireParams) (supervisor.RuntimeInfo, error) {
+	f.acquires++
+	return f.info, f.err
+}
+func (f *fakeRuntimeController) AcquireRuntimeWithRequestID(ctx context.Context, _ string, params supervisor.AcquireParams) (supervisor.RuntimeInfo, error) {
+	return f.AcquireRuntime(ctx, params)
+}
+func (f *fakeRuntimeController) HeartbeatLease(context.Context, string, uint64) error { return nil }
+func (f *fakeRuntimeController) PinTurn(context.Context, string, string, uint64) error {
+	f.pins++
+	return nil
+}
+func (f *fakeRuntimeController) UnpinTurn(context.Context, string, string, uint64) error { return nil }
+func (f *fakeRuntimeController) ReleaseRuntime(context.Context, string, uint64) error    { return nil }
+
 func newFakeGateway() *fakeGateway {
-	return &fakeGateway{events: make(chan hermes.Event, 16), params: make(map[string][]map[string]any)}
+	return &fakeGateway{events: make(chan hermes.Event, 16), params: make(map[string][]map[string]any), profileExists: true}
 }
 
 func (f *fakeGateway) Connect(context.Context) error { return nil }
 func (f *fakeGateway) Close()                        { close(f.events) }
 func (f *fakeGateway) Events() <-chan hermes.Event   { return f.events }
+func (f *fakeGateway) ProfileExists(context.Context, string) (bool, error) {
+	return f.profileExists, f.profileErr
+}
 
 func (f *fakeGateway) Call(_ context.Context, method string, params any) (map[string]any, error) {
 	f.mu.Lock()
@@ -80,6 +108,17 @@ func (f *fakeGateway) lastParams(method string) map[string]any {
 	return values[len(values)-1]
 }
 
+func (f *fakeGateway) called(method string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, call := range f.calls {
+		if call == method {
+			return true
+		}
+	}
+	return false
+}
+
 type testEmitter struct {
 	mu            sync.Mutex
 	notifications []string
@@ -99,7 +138,7 @@ func testConfig(t *testing.T, cwd string) config.Config {
 	t.Helper()
 	t.Setenv("MHG_PROFILE", "")
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := osWrite(path, []byte("gateway:\n  url: ws://127.0.0.1:9119/api/ws\nsession:\n  profile: product-solution\nstate_db: "+filepath.Join(filepath.Dir(path), "state.db")+"\n")); err != nil {
+	if err := osWrite(path, []byte("gateway:\n  url: ws://127.0.0.1:9119/api/ws\nsession:\n  profile: kahn\nstate_db: "+filepath.Join(filepath.Dir(path), "state.db")+"\n")); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.Load(path)
@@ -146,17 +185,73 @@ func TestBridgePreservesStableIDAndMapsEvents(t *testing.T) {
 	if fake.resumed == false {
 		t.Fatal("resume was not sent to Hermes")
 	}
-	if profile := fake.lastParams("session.create")["profile"]; profile != "product-solution" {
+	if profile := fake.lastParams("session.create")["profile"]; profile != "kahn" {
 		t.Fatalf("session.create did not receive profile: %v", profile)
 	}
-	if profile := fake.lastParams("session.resume")["profile"]; profile != "product-solution" {
+	if profile := fake.lastParams("session.resume")["profile"]; profile != "kahn" {
 		t.Fatalf("session.resume did not receive profile: %v", profile)
 	}
-	if profile := fake.lastParams("prompt.submit")["profile"]; profile != "product-solution" {
+	if profile := fake.lastParams("prompt.submit")["profile"]; profile != "kahn" {
 		t.Fatalf("prompt.submit did not receive profile: %v", profile)
 	}
-	if stored.Profile != "product-solution" {
+	if stored.Profile != "kahn" {
 		t.Fatalf("mapping profile was not persisted: %q", stored.Profile)
+	}
+}
+
+func TestBridgeRejectsUnknownProfileBeforeSessionCreate(t *testing.T) {
+	cwd := t.TempDir()
+	cfg := testConfig(t, cwd)
+	store, err := state.Open(cfg.StatePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	fake := newFakeGateway()
+	fake.profileExists = false
+	b := New(cfg, store, fake, nil)
+	_, rpcErr := b.Handle(context.Background(), "session/new", json.RawMessage(`{"cwd":"`+cwd+`"}`), &testEmitter{})
+	if rpcErr == nil {
+		t.Fatal("expected profile-not-found error")
+	}
+	data, ok := rpcErr.Data.(map[string]any)
+	if !ok || data["mhg_code"] != CodeProfileNotFound {
+		t.Fatalf("unexpected profile error: %+v", rpcErr)
+	}
+	if fake.called("session.create") {
+		t.Fatal("session.create must not be called for an unknown profile")
+	}
+}
+
+func TestBridgeInitializeWorksOfflineAndLazyAcquireMapsProfileError(t *testing.T) {
+	cwd := t.TempDir()
+	cfg := testConfig(t, cwd)
+	store, err := state.Open(cfg.StatePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	runtime := &fakeRuntimeController{err: &supervisor.SupervisorError{Code: supervisor.CodeProfileNotFound, Message: "missing"}}
+	fake := newFakeGateway()
+	b := NewWithRuntime(cfg, store, fake, runtime, nil)
+	if err := b.Start(context.Background()); err != nil {
+		t.Fatalf("initialize must not require Supervisor/Hermes: %v", err)
+	}
+	if _, rpcErr := b.Handle(context.Background(), "initialize", nil, &testEmitter{}); rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	_, rpcErr := b.Handle(context.Background(), "session/new", json.RawMessage(`{"cwd":"`+cwd+`"}`), &testEmitter{})
+	if rpcErr == nil {
+		t.Fatal("expected profile error from lazy acquire")
+	}
+	if data, ok := rpcErr.Data.(map[string]any); !ok || data["mhg_code"] != CodeProfileNotFound {
+		t.Fatalf("unexpected error: %+v", rpcErr)
+	}
+	if fake.called("session.create") {
+		t.Fatal("unknown profile must not create a session")
+	}
+	if runtime.acquires != 1 {
+		t.Fatalf("expected one lazy acquire, got %d", runtime.acquires)
 	}
 }
 

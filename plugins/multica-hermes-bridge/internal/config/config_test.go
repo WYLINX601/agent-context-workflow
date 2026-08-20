@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -58,9 +59,48 @@ func TestProfilePrecedenceAndValidation(t *testing.T) {
 func TestProfileIsPartOfGatewayLockIdentity(t *testing.T) {
 	base := Defaults()
 	named := base
-	named.Session.Profile = "product-solution"
+	named.Session.Profile = "kahn"
 	if base.GatewayLockKey() == named.GatewayLockKey() {
 		t.Fatal("profile must isolate gateway lock identity")
+	}
+}
+
+func TestGatewayLockScopeCanBeEndpointOrProfile(t *testing.T) {
+	first := Defaults()
+	first.Session.Profile = "kahn"
+	second := first
+	second.Session.Profile = "work"
+
+	first.Concurrency.ExclusiveTurnScope = "profile"
+	second.Concurrency.ExclusiveTurnScope = "profile"
+	if first.GatewayLockKey() == second.GatewayLockKey() {
+		t.Fatal("profile turn scope must isolate profiles")
+	}
+
+	first.Concurrency.ExclusiveTurnScope = "endpoint"
+	second.Concurrency.ExclusiveTurnScope = "endpoint"
+	if first.GatewayLockKey() != second.GatewayLockKey() {
+		t.Fatal("endpoint turn scope must serialize profiles on one endpoint")
+	}
+}
+
+func TestInvalidGatewayLockScopeIsRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.Concurrency.ExclusiveTurnScope = "gateway"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid exclusive turn scope to be rejected")
+	}
+}
+
+func TestProfilesURLUsesStatusOriginWithoutQueryToken(t *testing.T) {
+	cfg := Defaults()
+	cfg.Gateway.StatusURL = "http://127.0.0.1:9119/api/status?token=stale"
+	cfg.Gateway.Token = "session-token"
+	if got := cfg.ProfilesURL(); got != "http://127.0.0.1:9119/api/profiles" {
+		t.Fatalf("unexpected profiles URL: %q", got)
+	}
+	if strings.Contains(cfg.ProfilesURL(), "session-token") {
+		t.Fatal("profiles URL must not contain the session token")
 	}
 }
 

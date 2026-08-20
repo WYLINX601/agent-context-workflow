@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gofrs/flock"
 	_ "modernc.org/sqlite"
 )
 
@@ -25,8 +26,9 @@ type Session struct {
 }
 
 type Store struct {
-	db *sql.DB
-	mu sync.Mutex
+	db   *sql.DB
+	lock *flock.Flock
+	mu   sync.Mutex
 }
 
 func Open(path string) (*Store, error) {
@@ -36,14 +38,24 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
+	lock := flock.New(path + ".lock")
+	locked, err := lock.TryLock()
+	if err != nil {
+		return nil, fmt.Errorf("acquire state database lock: %w", err)
+	}
+	if !locked {
+		return nil, fmt.Errorf("state database is already in use: %s", path)
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
+		_ = lock.Unlock()
 		return nil, fmt.Errorf("open state database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	store := &Store{db: db}
+	store := &Store{db: db, lock: lock}
 	if err := store.migrate(); err != nil {
 		_ = db.Close()
+		_ = lock.Unlock()
 		return nil, err
 	}
 	return store, nil
@@ -115,10 +127,19 @@ func (s *Store) hasColumn(table, wanted string) (bool, error) {
 }
 
 func (s *Store) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil {
 		return nil
 	}
-	return s.db.Close()
+	var dbErr error
+	if s.db != nil {
+		dbErr = s.db.Close()
+	}
+	if s.lock != nil {
+		if err := s.lock.Unlock(); dbErr == nil {
+			dbErr = err
+		}
+	}
+	return dbErr
 }
 
 func (s *Store) Create(session Session) error {

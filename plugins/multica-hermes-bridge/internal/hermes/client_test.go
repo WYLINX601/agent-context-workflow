@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/config"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/config"
 )
 
 func TestClientConnectsToGatewayAndCorrelatesRPC(t *testing.T) {
@@ -80,5 +80,57 @@ func TestEventEnvelopeSupportsNestedPayload(t *testing.T) {
 	event := <-client.events
 	if event.Type != "tool.start" || event.Payload["name"] != "read_file" {
 		t.Fatalf("unexpected event: %+v", event)
+	}
+}
+
+func TestClientProfileExistsUsesProfilesEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/profiles" {
+			t.Errorf("unexpected profile endpoint: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("X-Hermes-Session-Token"); got != "test-token" {
+			t.Errorf("profile lookup did not use Hermes session token header: %q", got)
+		}
+		if got := r.URL.RawQuery; got != "" {
+			t.Errorf("profile lookup leaked token into query: %q", got)
+		}
+		_, _ = w.Write([]byte(`{"profiles":[{"name":"default"},{"name":"kahn"}]}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Defaults()
+	cfg.Gateway.StatusURL = server.URL + "/api/status"
+	cfg.Gateway.Token = "test-token"
+	client := NewClient(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	exists, err := client.ProfileExists(ctx, "kahn")
+	if err != nil || !exists {
+		t.Fatalf("existing profile was not detected: exists=%v err=%v", exists, err)
+	}
+	exists, err = client.ProfileExists(ctx, "missing")
+	if err != nil || exists {
+		t.Fatalf("missing profile was incorrectly detected: exists=%v err=%v", exists, err)
+	}
+}
+
+func TestClientProfileTopologyRequiresMultiplexAndServedProfile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"profiles":[{"name":"kahn"}],"gateway_mode":"multiplex","gateways":[{"profile":"default","served_profiles":["kahn"]}]}`))
+	}))
+	defer server.Close()
+	cfg := config.Defaults()
+	cfg.Gateway.StatusURL = server.URL + "/api/status"
+	client := NewClient(cfg)
+	topology, err := client.ProfileTopology(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !topology.Serves("kahn") || topology.Serves("missing") {
+		t.Fatalf("unexpected profile topology: %+v", topology)
+	}
+	topology.GatewayMode = "single"
+	if topology.Serves("kahn") {
+		t.Fatal("single-profile gateway must not be treated as multiplex")
 	}
 }

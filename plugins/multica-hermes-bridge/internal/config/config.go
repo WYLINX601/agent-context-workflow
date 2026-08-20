@@ -37,9 +37,24 @@ type Config struct {
 	Permissions  Permissions `yaml:"permissions" json:"permissions"`
 	MCP          MCP         `yaml:"mcp" json:"mcp"`
 	Logging      Logging     `yaml:"logging" json:"logging"`
+	Supervisor   Supervisor  `yaml:"supervisor" json:"supervisor"`
 	StateDB      string      `yaml:"state_db,omitempty" json:"state_db,omitempty"`
 	ConfigPath   string      `yaml:"-" json:"config_path"`
 	UsedDefaults bool        `yaml:"-" json:"used_defaults"`
+}
+
+type Supervisor struct {
+	Enabled             bool   `yaml:"enabled" json:"enabled"`
+	Endpoint            string `yaml:"endpoint" json:"endpoint"`
+	RuntimeDB           string `yaml:"runtime_db,omitempty" json:"runtime_db,omitempty"`
+	HermesExecutable    string `yaml:"hermes_executable" json:"hermes_executable"`
+	Scope               string `yaml:"scope" json:"scope"`
+	HeartbeatInterval   string `yaml:"heartbeat_interval" json:"heartbeat_interval"`
+	LeaseTTL            string `yaml:"lease_ttl" json:"lease_ttl"`
+	HealthInterval      string `yaml:"health_interval" json:"health_interval"`
+	StartTimeout        string `yaml:"start_timeout" json:"start_timeout"`
+	ShutdownGrace       string `yaml:"shutdown_grace" json:"shutdown_grace"`
+	IsolatedIdleTimeout string `yaml:"isolated_idle_timeout" json:"isolated_idle_timeout"`
 }
 
 type Gateway struct {
@@ -62,6 +77,13 @@ type Session struct {
 }
 
 type Concurrency struct {
+	// ExclusiveTurnScope controls the unit serialized by the local turn lock.
+	// "profile" keeps different Hermes profiles independent; "endpoint"
+	// serializes all profiles sharing one Gateway endpoint.
+	ExclusiveTurnScope string `yaml:"exclusive_turn_scope" json:"exclusive_turn_scope"`
+	// ExclusiveTurnPerGateway is retained for configuration compatibility. It
+	// is only consulted when ExclusiveTurnScope is empty; new configurations
+	// should use ExclusiveTurnScope explicitly.
 	ExclusiveTurnPerGateway bool `yaml:"exclusive_turn_per_gateway" json:"exclusive_turn_per_gateway"`
 }
 
@@ -96,10 +118,21 @@ func Defaults() Config {
 			IDStrategy:    "mapped",
 			ReplayHistory: false,
 		},
-		Concurrency: Concurrency{ExclusiveTurnPerGateway: true},
+		Concurrency: Concurrency{ExclusiveTurnScope: "profile", ExclusiveTurnPerGateway: true},
 		Permissions: Permissions{Mode: "multica"},
 		MCP:         MCP{Mode: "hermes_native"},
 		Logging:     Logging{Level: "info"},
+		Supervisor: Supervisor{
+			Enabled:             true,
+			HermesExecutable:    "hermes",
+			Scope:               "shared",
+			HeartbeatInterval:   "10s",
+			LeaseTTL:            "30s",
+			HealthInterval:      "5s",
+			StartTimeout:        "20s",
+			ShutdownGrace:       "5s",
+			IsolatedIdleTimeout: "10m",
+		},
 	}
 }
 
@@ -193,6 +226,21 @@ func applyEnvironment(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("MHG_GATEWAY_TOKEN_FILE")); value != "" {
 		cfg.Gateway.TokenFile = value
 	}
+	if value := strings.TrimSpace(os.Getenv("MHG_SUPERVISOR_ENDPOINT")); value != "" {
+		cfg.Supervisor.Endpoint = value
+	}
+	if value := strings.TrimSpace(os.Getenv("MHG_SUPERVISOR_RUNTIME_DB")); value != "" {
+		cfg.Supervisor.RuntimeDB = value
+	}
+	if value := strings.TrimSpace(os.Getenv("MHG_HERMES_EXECUTABLE")); value != "" {
+		cfg.Supervisor.HermesExecutable = value
+	}
+	if value := strings.TrimSpace(os.Getenv("MHG_SUPERVISOR_SCOPE")); value != "" {
+		cfg.Supervisor.Scope = value
+	}
+	if value := strings.TrimSpace(os.Getenv("MHG_EXCLUSIVE_TURN_SCOPE")); value != "" {
+		cfg.Concurrency.ExclusiveTurnScope = value
+	}
 }
 
 func (c Config) Validate() error {
@@ -240,6 +288,17 @@ func (c Config) Validate() error {
 	if c.MCP.Mode == "" {
 		return fmt.Errorf("MHG9001: mcp.mode must be hermes_native")
 	}
+	if c.Supervisor.Enabled {
+		if scope := strings.TrimSpace(c.Supervisor.Scope); scope != "shared" && scope != "isolated" {
+			return fmt.Errorf("MHG1105: supervisor.scope must be shared or isolated")
+		}
+		if strings.TrimSpace(c.Supervisor.HermesExecutable) == "" {
+			return fmt.Errorf("MHG1105: supervisor.hermes_executable is required")
+		}
+	}
+	if scope := c.turnLockScope(); scope != "endpoint" && scope != "profile" {
+		return fmt.Errorf("MHG9001: concurrency.exclusive_turn_scope must be endpoint or profile")
+	}
 	return nil
 }
 
@@ -260,6 +319,44 @@ func (c Config) StatePath() string {
 		return expand(c.StateDB)
 	}
 	return DefaultStatePath()
+}
+
+func (c Config) SupervisorEndpoint() string {
+	if endpoint := strings.TrimSpace(c.Supervisor.Endpoint); endpoint != "" {
+		return expand(endpoint)
+	}
+	return filepath.Join(filepath.Dir(c.StatePath()), "supervisor.sock")
+}
+
+func (c Config) SupervisorRuntimeDB() string {
+	if path := strings.TrimSpace(c.Supervisor.RuntimeDB); path != "" {
+		return expand(path)
+	}
+	return filepath.Join(filepath.Dir(c.StatePath()), "runtime.db")
+}
+
+func (c Config) SupervisorHeartbeatDuration() time.Duration {
+	return parseDuration(c.Supervisor.HeartbeatInterval, 10*time.Second)
+}
+
+func (c Config) SupervisorLeaseTTL() time.Duration {
+	return parseDuration(c.Supervisor.LeaseTTL, 30*time.Second)
+}
+
+func (c Config) SupervisorHealthDuration() time.Duration {
+	return parseDuration(c.Supervisor.HealthInterval, 5*time.Second)
+}
+
+func (c Config) SupervisorStartTimeout() time.Duration {
+	return parseDuration(c.Supervisor.StartTimeout, 20*time.Second)
+}
+
+func (c Config) SupervisorShutdownGrace() time.Duration {
+	return parseDuration(c.Supervisor.ShutdownGrace, 5*time.Second)
+}
+
+func (c Config) SupervisorIdleTimeout() time.Duration {
+	return parseDuration(c.Supervisor.IsolatedIdleTimeout, 10*time.Minute)
 }
 
 func (c Config) Token() string {
@@ -289,8 +386,23 @@ func (c Config) Profile() string {
 }
 
 func (c Config) GatewayLockKey() string {
-	digest := sha256.Sum256([]byte(c.GatewayIdentity() + "\x00" + c.Profile()))
+	identity := c.GatewayIdentity()
+	if c.turnLockScope() == "profile" {
+		identity += "\x00" + c.Profile()
+	}
+	digest := sha256.Sum256([]byte(identity))
 	return hex.EncodeToString(digest[:])
+}
+
+func (c Config) turnLockScope() string {
+	scope := strings.ToLower(strings.TrimSpace(c.Concurrency.ExclusiveTurnScope))
+	if scope != "" {
+		return scope
+	}
+	if c.Concurrency.ExclusiveTurnPerGateway {
+		return "endpoint"
+	}
+	return "profile"
 }
 
 func (c Config) WebSocketURL() string {
@@ -316,6 +428,18 @@ func (c Config) StatusURLWithToken() string {
 		query.Set("token", token)
 		u.RawQuery = query.Encode()
 	}
+	return u.String()
+}
+
+func (c Config) ProfilesURL() string {
+	u, err := url.Parse(c.Gateway.StatusURL)
+	if err != nil {
+		return c.Gateway.StatusURL
+	}
+	u.Path = "/api/profiles"
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.Fragment = ""
 	return u.String()
 }
 
