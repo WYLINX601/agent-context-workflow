@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/config"
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/protocol"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/config"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/protocol"
 )
 
 const (
@@ -40,9 +40,26 @@ type Event struct {
 	Payload   map[string]any
 }
 
+type GatewayTopology struct {
+	Profile        string   `json:"profile"`
+	ServedProfiles []string `json:"served_profiles"`
+}
+
+type ProfileTopology struct {
+	Profiles    []ProfileInfo     `json:"profiles"`
+	GatewayMode string            `json:"gateway_mode"`
+	Gateways    []GatewayTopology `json:"gateways"`
+}
+
+type ProfileInfo struct {
+	Name string `json:"name"`
+}
+
 type Client struct {
-	config *config.Config
-	conn   *websocket.Conn
+	config               *config.Config
+	baseGatewayToken     string
+	baseGatewayTokenFile string
+	conn                 *websocket.Conn
 
 	writeMu   sync.Mutex
 	pendingMu sync.Mutex
@@ -59,12 +76,37 @@ type Client struct {
 
 func NewClient(cfg config.Config) *Client {
 	return &Client{
-		config:  &cfg,
-		pending: make(map[string]chan protocol.Message),
-		events:  make(chan Event, 128),
-		ready:   make(chan struct{}),
-		done:    make(chan struct{}),
+		config:               &cfg,
+		baseGatewayToken:     cfg.Gateway.Token,
+		baseGatewayTokenFile: cfg.Gateway.TokenFile,
+		pending:              make(map[string]chan protocol.Message),
+		events:               make(chan Event, 128),
+		ready:                make(chan struct{}),
+		done:                 make(chan struct{}),
 	}
+}
+
+func (c *Client) ConfigureRuntime(gatewayURL, statusURL string) {
+	if strings.TrimSpace(gatewayURL) != "" {
+		c.config.Gateway.URL = gatewayURL
+	}
+	if strings.TrimSpace(statusURL) != "" {
+		c.config.Gateway.StatusURL = statusURL
+	}
+}
+
+// ConfigureTokenRef switches the client to the opaque token reference issued
+// by Supervisor. The token value never crosses the Supervisor IPC boundary.
+// local-config restores the adapter's original credential source for adopted
+// external Gateways.
+func (c *Client) ConfigureTokenRef(tokenRef string) {
+	if strings.TrimSpace(tokenRef) == "" || strings.TrimSpace(tokenRef) == "local-config" {
+		c.config.Gateway.Token = c.baseGatewayToken
+		c.config.Gateway.TokenFile = c.baseGatewayTokenFile
+		return
+	}
+	c.config.Gateway.Token = ""
+	c.config.Gateway.TokenFile = tokenRef
 }
 
 func (c *Client) Connect(ctx context.Context) error {
@@ -288,6 +330,98 @@ func HTTPStatus(ctx context.Context, cfg config.Config) error {
 		return fmt.Errorf("MHG1001 GATEWAY_UNAVAILABLE: GET /api/status returned %s", response.Status)
 	}
 	return nil
+}
+
+func (c *Client) ProfileExists(ctx context.Context, profile string) (bool, error) {
+	profile = strings.TrimSpace(profile)
+	if profile == "" {
+		return true, nil
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.config.ProfilesURL(), nil)
+	if err != nil {
+		return false, fmt.Errorf("build profile lookup request: %w", err)
+	}
+	if token := c.config.Token(); token != "" {
+		request.Header.Set("X-Hermes-Session-Token", token)
+	}
+	client := &http.Client{Timeout: c.config.ConnectTimeoutDuration()}
+	response, err := client.Do(request)
+	if err != nil {
+		return false, fmt.Errorf("GET /api/profiles: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return false, fmt.Errorf("GET /api/profiles returned %s", response.Status)
+	}
+	var payload struct {
+		Profiles *[]struct {
+			Name string `json:"name"`
+		} `json:"profiles"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return false, fmt.Errorf("decode /api/profiles response: %w", err)
+	}
+	if payload.Profiles == nil {
+		return false, errors.New("decode /api/profiles response: profiles field is missing")
+	}
+	for _, item := range *payload.Profiles {
+		if strings.TrimSpace(item.Name) == profile {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (c *Client) ProfileTopology(ctx context.Context) (ProfileTopology, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.config.ProfilesURL(), nil)
+	if err != nil {
+		return ProfileTopology{}, fmt.Errorf("build profile topology request: %w", err)
+	}
+	if token := c.config.Token(); token != "" {
+		request.Header.Set("X-Hermes-Session-Token", token)
+	}
+	client := &http.Client{Timeout: c.config.ConnectTimeoutDuration()}
+	response, err := client.Do(request)
+	if err != nil {
+		return ProfileTopology{}, fmt.Errorf("GET /api/profiles: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return ProfileTopology{}, fmt.Errorf("GET /api/profiles returned %s", response.Status)
+	}
+	var payload ProfileTopology
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return ProfileTopology{}, fmt.Errorf("decode /api/profiles response: %w", err)
+	}
+	if payload.GatewayMode == "" || payload.Gateways == nil {
+		return ProfileTopology{}, errors.New("profile topology fields are missing")
+	}
+	return payload, nil
+}
+
+func (topology ProfileTopology) Serves(profile string) bool {
+	profile = strings.TrimSpace(profile)
+	if profile == "" || topology.GatewayMode != "multiplex" {
+		return false
+	}
+	exists := false
+	for _, candidate := range topology.Profiles {
+		if strings.TrimSpace(candidate.Name) == profile {
+			exists = true
+			break
+		}
+	}
+	if !exists {
+		return false
+	}
+	for _, gateway := range topology.Gateways {
+		for _, served := range gateway.ServedProfiles {
+			if strings.TrimSpace(served) == profile {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func stringValue(value map[string]any, keys ...string) string {

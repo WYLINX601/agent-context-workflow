@@ -12,11 +12,12 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/acp"
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/bridge"
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/config"
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/hermes"
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/state"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/acp"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/bridge"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/config"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/hermes"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/state"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/supervisor"
 )
 
 var version = bridge.Version
@@ -41,10 +42,12 @@ func run(args []string, in io.Reader, out, errOut io.Writer) error {
 		return runConfig(args[1:], out)
 	case "doctor":
 		return runDoctor(args[1:], errOut)
+	case "supervisor":
+		return runSupervisor(args[1:], errOut)
 	case "acp":
 		return runACP(args[1:], in, out, errOut)
 	default:
-		return fmt.Errorf("unknown command %q; use acp, doctor, config show, or version", command)
+		return fmt.Errorf("unknown command %q; use acp, supervisor, doctor, config show, or version", command)
 	}
 }
 
@@ -119,6 +122,18 @@ func runDoctor(args []string, errOut io.Writer) error {
 	if err := check("WebSocket /api/ws and gateway.ready", func() error { return client.Connect(ctx) }); err != nil {
 		return err
 	}
+	if profile := cfg.Profile(); profile != "" {
+		profileCtx, profileCancel := context.WithTimeout(context.Background(), cfg.RPCTimeoutDuration())
+		exists, profileErr := client.ProfileExists(profileCtx, profile)
+		profileCancel()
+		if profileErr != nil {
+			return fmt.Errorf("%s: could not verify Hermes profile %q: %w", bridge.CodeProfileLookupFailed, profile, profileErr)
+		}
+		if !exists {
+			return fmt.Errorf("%s: Hermes profile %q does not exist", bridge.CodeProfileNotFound, profile)
+		}
+		_, _ = fmt.Fprintf(errOut, "✓ Hermes profile %s exists\n", profile)
+	}
 	withProfile := func(params map[string]any) map[string]any {
 		if value := cfg.Profile(); value != "" {
 			params["profile"] = value
@@ -181,7 +196,11 @@ func runACP(args []string, in io.Reader, out, errOut io.Writer) error {
 		log.New(errOut, "", log.LstdFlags).Printf(format, values...)
 	}
 	client := hermes.NewClient(cfg)
-	bridgeHandler := bridge.New(cfg, store, client, logf)
+	var runtimeController bridge.RuntimeController
+	if cfg.Supervisor.Enabled {
+		runtimeController = supervisor.NewClient(cfg.SupervisorEndpoint(), fmt.Sprintf("acp-%d", os.Getpid()))
+	}
+	bridgeHandler := bridge.NewWithRuntime(cfg, store, client, runtimeController, logf)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	startCtx, startCancel := context.WithTimeout(ctx, cfg.ConnectTimeoutDuration())
@@ -196,6 +215,52 @@ func runACP(args []string, in io.Reader, out, errOut io.Writer) error {
 		server.Close()
 	}()
 	return server.Run(ctx)
+}
+
+func runSupervisor(args []string, errOut io.Writer) error {
+	flags := flag.NewFlagSet("supervisor", flag.ContinueOnError)
+	flags.SetOutput(errOut)
+	configPath := flags.String("config", "", "path to config.yaml")
+	socket := flags.String("socket", "", "Supervisor IPC endpoint")
+	runtimeDB := flags.String("runtime-db", "", "Supervisor runtime registry path")
+	hermesExecutable := flags.String("hermes", "", "Hermes executable")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	if *socket != "" {
+		cfg.Supervisor.Endpoint = *socket
+	}
+	if *runtimeDB != "" {
+		cfg.Supervisor.RuntimeDB = *runtimeDB
+	}
+	if *hermesExecutable != "" {
+		cfg.Supervisor.HermesExecutable = *hermesExecutable
+	}
+	manager, err := supervisor.NewManager(cfg, func(format string, values ...any) { log.New(errOut, "", log.LstdFlags).Printf(format, values...) })
+	if err != nil {
+		return err
+	}
+	defer manager.Close()
+	server, err := supervisor.NewServer(manager, cfg.SupervisorEndpoint())
+	if err != nil {
+		return err
+	}
+	defer server.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve() }()
+	select {
+	case err := <-serveErr:
+		return err
+	case <-ctx.Done():
+		server.Close()
+		return nil
+	}
 }
 
 func redact(value string) string {

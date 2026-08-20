@@ -108,15 +108,16 @@ Agent 可以提出建议和候选，但不能自行把未经确认的内容提�
 
 ## 6. 运行桥接
 
-公开参考实现是 Go ACP Adapter：
+公开参考实现是 Go ACP Adapter + 本机 Supervisor：
 
 ```text
 Multica Custom Runtime
   → ACP stdio
   → Go ACP Adapter
-  → 本地 Hermes Gateway
+  → Supervisor IPC
+  → 已存在或按需启动的本地 Hermes Gateway
 ```
 
 同一个活动 Session 不应由多个适配路径同时驱动。Adapter 的配置、Token 和状态库保持在运行设备本地，不进入项目仓库。
 
-Go ACP Adapter 不负责创建或调度 Multica 小队、不管理 Issue、评论和状态，也不替代人的评估节点。非 Multica 内的 Agent 读取 Issue，优先通过当前可用的 Multica CLI 完成；两者的职责边界见 [Multica 控制面边界](multica-control-plane.md)。
+Go ACP Adapter 不负责创建或调度 Multica 小队、不管理 Issue、评论和状态，也不直接启动、停止或重启 Hermes；Supervisor 独立负责本地 Gateway 生命周期。非 Multica 内的 Agent 读取 Issue，优先通过当前可用的 Multica CLI 完成；两者的职责边界见 [Multica 控制面边界](multica-control-plane.md)。

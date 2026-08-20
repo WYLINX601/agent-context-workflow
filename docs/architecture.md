@@ -30,6 +30,6 @@ Context 是跨工具协作的共同坐标，不是把整库内容复制给每个
 
 Multica 产品方案小队是本仓库的核心参考演示。小队控制面仍在 Multica；本仓库公开 Context、角色职责、Workflow 结构、Go ACP Adapter 边界和脱敏配置，不实现第二套小队调度系统。组件职责详见 Multica 控制面边界文档。
 
-公开桥接采用 Go ACP Adapter。它连接 Multica Custom Runtime 与已经运行的本地 Hermes Gateway；它不启动或迁移个人运行时，不复制 Memory、Session 或凭据，也不替代人的审批。
+公开接入采用 Go ACP Adapter + 本机 Supervisor。Adapter 连接 Multica Custom Runtime 与 Supervisor IPC，由 Supervisor 负责接管或按需启动本地 Hermes Gateway；两者都不迁移个人运行时，不复制 Memory、Session 或凭据，也不替代人的审批。
 
 使用者可以以公开示例为起点，根据自己的需求、角色、工具、数据边界和人工审核规则调整 Multica 小队。

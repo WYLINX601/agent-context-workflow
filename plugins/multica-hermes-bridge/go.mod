@@ -1,8 +1,9 @@
-module github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge
+module github.com/linx-workbench/multica-hermes-gateway
 
 go 1.24.0
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/gofrs/flock v0.8.1
 	github.com/gorilla/websocket v1.5.3
 	gopkg.in/yaml.v3 v3.0.1

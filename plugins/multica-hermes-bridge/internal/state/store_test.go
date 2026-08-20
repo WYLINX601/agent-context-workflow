@@ -16,7 +16,7 @@ func TestSessionMappingDoesNotContainPromptFields(t *testing.T) {
 		MHGSessionID:    "mhg_test",
 		HermesStoredID:  "stored-1",
 		GatewayIdentity: "ws://127.0.0.1:9119/api/ws",
-		Profile:         "product-solution",
+		Profile:         "kahn",
 		CWD:             "/tmp/project",
 	}); err != nil {
 		t.Fatal(err)
@@ -25,7 +25,7 @@ func TestSessionMappingDoesNotContainPromptFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.HermesStoredID != "stored-1" || got.Profile != "product-solution" || got.CWD != "/tmp/project" {
+	if got.HermesStoredID != "stored-1" || got.Profile != "kahn" || got.CWD != "/tmp/project" {
 		t.Fatalf("unexpected mapping: %+v", got)
 	}
 	if err := store.UpdateLive("mhg_test", "stored-2", "/tmp/other"); err != nil {

@@ -241,7 +241,7 @@ flowchart TD
   → 下一条需求复用已确认的 Context 和 Workflow
 ~~~
 
-在这条流线上，Multica 是小队的控制面，Context Skill 是事实和权限底座，人的决策中心通过小队 Prompt/Workflow 中的评估节点发挥作用，Go ACP Adapter 只承担 ACP 与本地 Hermes Gateway 的协议桥接。
+在这条流线上，Multica 是小队的控制面，Context Skill 是事实和权限底座，人的决策中心通过小队 Prompt/Workflow 中的评估节点发挥作用，Go ACP Adapter 通过本机 Supervisor IPC 接入 Hermes Gateway；Supervisor 独立负责 Gateway 生命周期。
 
 ## 五、从需求到能力的八步工作流
 
@@ -333,7 +333,7 @@ Agent 可以提出建议、生成候选和执行已授权动作，但不能把�
 | Task Context Schema | 任务 Context 的字段约束和示例 | [contracts/task-context/](contracts/task-context/) |
 | 产品方案小队配置 | Multica 产品方案小队的脱敏参考配置 | [configs/squads/](configs/squads/) |
 | Multica 控制面边界 | 小队控制面、Context、CLI、Adapter 与人的职责边界 | [docs/multica-control-plane.md](docs/multica-control-plane.md) |
-| Go ACP Adapter | Multica ACP 与本地 Hermes Gateway 的公开桥接实现 | [plugins/multica-hermes-bridge/](plugins/multica-hermes-bridge/) |
+| Go ACP Adapter | Multica ACP、Supervisor IPC 与本地 Hermes Gateway 的公开接入实现 | [plugins/multica-hermes-bridge/](plugins/multica-hermes-bridge/) |
 | 产品方案小队示例 | 从需求进入小队、评审和写回的最小演示 | [examples/product-solution-squad/](examples/product-solution-squad/) |
 | 自进化 Skill 预留 | 后续能力进化实现边界和缺口 | [skills/self-evolution/](skills/self-evolution/) |
 
@@ -382,16 +382,23 @@ go vet ./...
 go build -o multica-hermes-gateway ./cmd/multica-hermes-gateway
 ~~~
 
+启动本机 Supervisor（生产环境可由 launchd 或 Windows Service 托管）：
+
+~~~bash
+./multica-hermes-gateway supervisor
+~~~
+
 桥接路径如下：
 
 ~~~text
 Multica Custom Runtime
   → ACP stdio
   → Go ACP Adapter
-  → 本地 Hermes Gateway
+  → Supervisor IPC
+  → 已存在或按需启动的本地 Hermes Gateway
 ~~~
 
-Adapter 只负责协议适配和任务桥接，不托管个人 Profile、Memory、Session 或凭据。同一个活动 Session 不应由多个适配路径同时驱动。
+Adapter 只处理 ACP 协议、Session 映射、Profile 透传、权限请求和 Supervisor IPC；Supervisor 独立负责 Gateway 的接管、按需启动、租约、turn pin、健康检查和安全回收。两者都不托管个人 Profile、Memory、Session 或凭据。同一个活动 Session 不应由多个适配路径同时驱动。
 
 Adapter 不创建或调度 Multica 小队，也不管理 Issue、评论和状态；非 Multica 内的 Agent 读取 Issue 时通过当前可用的 Multica CLI 完成。
 
@@ -425,7 +432,7 @@ Adapter 不创建或调度 Multica 小队，也不管理 Issue、评论和状态
 - 公开脱敏版核心方法文档；
 - Context Contract、Task Context Schema 和配置示例；
 - Multica 产品方案小队的公开参考配置；
-- Go ACP Adapter 的源码、测试和构建入口；
+- v0.3 Go ACP Adapter、Supervisor 的源码、测试和构建入口；
 - 产品方案小队的最小流程示例；
 - 发布边界、安全说明和 CI 基础结构。
 

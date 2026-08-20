@@ -11,7 +11,7 @@
 | Multica | Workspace、Issue、小队、Agent 调度、状态、评论、Prompt／Workflow 执行 | 不替代项目 Context 的事实治理 |
 | Context Skill | 项目／需求／任务 Context 配置、按需加载、权限边界和写回规则 | 不负责创建或调度 Multica 小队 |
 | Multica CLI | 为非 Multica Agent 提供 Issue、项目和工作区的命令行访问入口 | 不替代 Multica 的控制面 |
-| Go ACP Adapter | ACP stdio 与已经运行的本地 Hermes Gateway 之间的协议适配 | 不负责 Issue 轮询、小队调度或产品方案汇总 |
+| Go ACP Adapter | ACP stdio 与本机 Supervisor IPC 之间的协议适配，并接入 Hermes Gateway | 不负责 Issue 轮询、小队调度或 Hermes 生命周期 |
 | Hermes Gateway | 在本地承接 Profile、Session 和 Agent Runtime | 不成为项目公共事实源 |
 | 人 | 评估方向、关键取舍、阶段成果、最终交付和能力候选 | 不需要亲自承担每个专业 Agent 的执行 |
 
@@ -25,7 +25,8 @@ flowchart LR
     Lead["产品方案架构师<br/>Lead Agent"]
     Experts["用户研究 / 市场竞品 / PRD / 红队"]
     CLI["Multica CLI<br/>非 Multica Agent 读取 Issue"]
-    Adapter["Go ACP Adapter<br/>ACP ↔ Hermes Gateway"]
+    Adapter["Go ACP Adapter<br/>ACP ↔ Supervisor IPC"]
+    Supervisor["本机 Supervisor<br/>Runtime / Lease / Pin"]
     Hermes["本地 Hermes Gateway<br/>Profile / Session"]
     Writeback["项目产物 / 决定 / 事件 / 能力候选"]
 
@@ -37,7 +38,8 @@ flowchart LR
     Experts --> Lead
     CLI --> Multica
     Multica --> Adapter
-    Adapter --> Hermes
+    Adapter --> Supervisor
+    Supervisor --> Hermes
     Lead --> User
     User --> Writeback
     Lead --> Writeback
@@ -91,16 +93,17 @@ Context 是小队协作的共同坐标，但不等于把完整个人 Context、M
 
 ## 6. Go ACP Adapter 的边界
 
-Go ACP Adapter 是可选的运行接入层：
+Go ACP Adapter 是可选的运行接入层；Supervisor 是独立的本机生命周期管理进程：
 
 ~~~text
 Multica Custom Runtime
   → ACP stdio
   → Go ACP Adapter
-  → 已运行的本地 Hermes Gateway
+  → Supervisor IPC
+  → 已存在或按需启动的本地 Hermes Gateway
 ~~~
 
-它只处理协议、Session 映射、Profile 透传、权限请求和本地 Gateway 通信。它不会：
+Adapter 只处理 ACP 协议、Session 映射、Profile 透传、权限请求和 Supervisor IPC；Supervisor 负责接管或按需启动 Gateway、租约、活动 turn pin、健康检查和安全回收。Adapter 和 Supervisor 都不会：
 
 - 创建或调度 Multica 小队；
 - 轮询或管理 Issue；
@@ -127,6 +130,6 @@ Multica Custom Runtime
 - 产品方案小队和成员；
 - 项目／需求 Context；
 - Multica CLI 或 Multica 原生入口；
-- 可选的本地 Hermes Gateway 和 Go ACP Adapter。
+- 可选的本地 Hermes Gateway、Supervisor 和 Go ACP Adapter。
 
 因此，本仓库的公开目标是“可理解、可配置、可接入、可脱敏复用”，而不是在没有 Multica 的情况下独立运行完整的小队控制面。

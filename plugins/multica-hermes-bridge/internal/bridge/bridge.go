@@ -13,15 +13,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/acp"
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/config"
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/hermes"
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/locking"
-	"github.com/WYLINX601/project-context-workflow/plugins/multica-hermes-bridge/internal/state"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/acp"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/config"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/hermes"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/locking"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/state"
+	"github.com/linx-workbench/multica-hermes-gateway/internal/supervisor"
 )
 
 const (
-	Version     = "0.2.0"
+	Version     = "0.3.0"
 	quietWindow = 250 * time.Millisecond
 )
 
@@ -36,6 +37,8 @@ const (
 	CodeSessionProfileMismatch = "MHG2005 SESSION_PROFILE_MISMATCH"
 	CodeInvalidCWD             = "MHG3001 INVALID_CWD"
 	CodeUnsupportedContent     = "MHG3002 UNSUPPORTED_CONTENT"
+	CodeProfileNotFound        = "MHG3004 PROFILE_NOT_FOUND"
+	CodeProfileLookupFailed    = "MHG3005 PROFILE_LOOKUP_FAILED"
 	CodeApprovalDenied         = "MHG4001 APPROVAL_DENIED"
 	CodeClarificationRequired  = "MHG4002 CLARIFICATION_REQUIRED"
 	CodeSudoRequired           = "MHG4003 SUDO_REQUIRED"
@@ -48,8 +51,26 @@ const (
 type Gateway interface {
 	Connect(context.Context) error
 	Call(context.Context, string, any) (map[string]any, error)
+	ProfileExists(context.Context, string) (bool, error)
 	Events() <-chan hermes.Event
 	Close()
+}
+
+type RuntimeController interface {
+	AcquireRuntime(context.Context, supervisor.AcquireParams) (supervisor.RuntimeInfo, error)
+	AcquireRuntimeWithRequestID(context.Context, string, supervisor.AcquireParams) (supervisor.RuntimeInfo, error)
+	HeartbeatLease(context.Context, string, uint64) error
+	PinTurn(context.Context, string, string, uint64) error
+	UnpinTurn(context.Context, string, string, uint64) error
+	ReleaseRuntime(context.Context, string, uint64) error
+}
+
+type runtimeConfigurer interface {
+	ConfigureRuntime(string, string)
+}
+
+type runtimeTokenConfigurer interface {
+	ConfigureTokenRef(string)
 }
 
 type logger func(format string, args ...any)
@@ -58,11 +79,24 @@ type Bridge struct {
 	cfg     config.Config
 	store   *state.Store
 	gateway Gateway
+	runtime RuntimeController
 	log     logger
 
-	mu       sync.Mutex
-	sessions map[string]*runtimeSession
-	closed   bool
+	mu               sync.Mutex
+	runtimeAcquireMu sync.Mutex
+	sessions         map[string]*runtimeSession
+	// gatewayFactory is available for the production Hermes client so a
+	// generation change can replace a dead WebSocket without replaying a turn.
+	// Test doubles and custom Gateway implementations remain connect-once.
+	gatewayFactory   func(config.Config) Gateway
+	closed           bool
+	runtimeInfo      supervisor.RuntimeInfo
+	runtimeRequestID string
+	runtimeStale     bool
+	runtimeCancel    context.CancelFunc
+	runtimeWG        sync.WaitGroup
+	requestWG        sync.WaitGroup
+	promptWG         sync.WaitGroup
 }
 
 type runtimeSession struct {
@@ -113,18 +147,37 @@ type modelOption struct {
 }
 
 func New(cfg config.Config, store *state.Store, gateway Gateway, logf func(string, ...any)) *Bridge {
+	return newBridge(cfg, store, gateway, nil, logf)
+}
+
+func NewWithRuntime(cfg config.Config, store *state.Store, gateway Gateway, runtime RuntimeController, logf func(string, ...any)) *Bridge {
+	return newBridge(cfg, store, gateway, runtime, logf)
+}
+
+func newBridge(cfg config.Config, store *state.Store, gateway Gateway, runtime RuntimeController, logf func(string, ...any)) *Bridge {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
+	var gatewayFactory func(config.Config) Gateway
 	if gateway == nil {
 		gateway = hermes.NewClient(cfg)
+		gatewayFactory = func(runtimeCfg config.Config) Gateway { return hermes.NewClient(runtimeCfg) }
+	} else if _, ok := gateway.(*hermes.Client); ok {
+		gatewayFactory = func(runtimeCfg config.Config) Gateway { return hermes.NewClient(runtimeCfg) }
+	}
+	runtimeRequestID, err := newSessionID()
+	if err != nil {
+		runtimeRequestID = fmt.Sprintf("runtime-%d", time.Now().UnixNano())
 	}
 	return &Bridge{
-		cfg:      cfg,
-		store:    store,
-		gateway:  gateway,
-		log:      logf,
-		sessions: make(map[string]*runtimeSession),
+		cfg:              cfg,
+		store:            store,
+		gateway:          gateway,
+		gatewayFactory:   gatewayFactory,
+		runtime:          runtime,
+		log:              logf,
+		sessions:         make(map[string]*runtimeSession),
+		runtimeRequestID: runtimeRequestID,
 	}
 }
 
@@ -133,6 +186,212 @@ func (b *Bridge) withProfile(params map[string]any) map[string]any {
 		params["profile"] = profile
 	}
 	return params
+}
+
+func (b *Bridge) ensureProfile(ctx context.Context) *acp.RPCError {
+	if err := b.ensureRuntime(ctx); err != nil {
+		return mapSupervisorError(err)
+	}
+	profile := b.cfg.Profile()
+	if profile == "" {
+		return nil
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, b.cfg.RPCTimeoutDuration())
+	defer cancel()
+	exists, err := b.gateway.ProfileExists(checkCtx, profile)
+	if err != nil {
+		return rpcError(acp.JSONRPCInternalError, CodeProfileLookupFailed,
+			fmt.Sprintf("could not verify Hermes profile %q: %v", profile, err))
+	}
+	if !exists {
+		return rpcError(acp.JSONRPCInvalidParams, CodeProfileNotFound,
+			fmt.Sprintf("Hermes profile %q does not exist", profile))
+	}
+	return nil
+}
+
+func (b *Bridge) ensureRuntime(ctx context.Context) error {
+	if b.runtime == nil {
+		return nil
+	}
+	b.runtimeAcquireMu.Lock()
+	defer b.runtimeAcquireMu.Unlock()
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return errors.New("adapter is shutting down")
+	}
+	if b.runtimeInfo.LeaseID != "" && !b.runtimeStale {
+		b.mu.Unlock()
+		return nil
+	}
+	hadRuntime := b.runtimeInfo.LeaseID != ""
+	wasStale := b.runtimeStale
+	b.mu.Unlock()
+	request := supervisor.AcquireParams{GatewayIdentity: b.cfg.GatewayIdentity(), Profile: b.cfg.Profile(), Scope: b.cfg.Supervisor.Scope}
+	info, err := b.acquireRuntime(ctx, request)
+	if err != nil {
+		return err
+	}
+	if hadRuntime && wasStale {
+		if err := b.replaceGateway(ctx, info); err != nil {
+			if info.LeaseID != b.currentRuntime().LeaseID {
+				_ = b.runtime.ReleaseRuntime(context.Background(), info.LeaseID, info.Generation)
+			}
+			return err
+		}
+	} else {
+		b.configureGateway(b.gateway, info)
+	}
+	if !hadRuntime {
+		connectCtx, cancel := context.WithTimeout(ctx, b.cfg.ConnectTimeoutDuration())
+		err = b.gateway.Connect(connectCtx)
+		cancel()
+		if err != nil {
+			_ = b.runtime.ReleaseRuntime(context.Background(), info.LeaseID, info.Generation)
+			return err
+		}
+	}
+	b.mu.Lock()
+	b.runtimeInfo = info
+	b.runtimeStale = false
+	b.mu.Unlock()
+	if !hadRuntime {
+		heartbeatCtx, heartbeatCancel := context.WithCancel(context.Background())
+		b.mu.Lock()
+		if b.closed {
+			b.mu.Unlock()
+			heartbeatCancel()
+			_ = b.runtime.ReleaseRuntime(context.Background(), info.LeaseID, info.Generation)
+			return errors.New("adapter is shutting down")
+		}
+		b.runtimeCancel = heartbeatCancel
+		b.runtimeWG.Add(1)
+		b.mu.Unlock()
+		go b.heartbeatRuntime(heartbeatCtx, info)
+	}
+	return nil
+}
+
+func (b *Bridge) acquireRuntime(ctx context.Context, params supervisor.AcquireParams) (supervisor.RuntimeInfo, error) {
+	return b.runtime.AcquireRuntimeWithRequestID(ctx, b.runtimeRequestID, params)
+}
+
+func (b *Bridge) reacquireRuntime(ctx context.Context, previous supervisor.RuntimeInfo) (supervisor.RuntimeInfo, error) {
+	b.runtimeAcquireMu.Lock()
+	defer b.runtimeAcquireMu.Unlock()
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return supervisor.RuntimeInfo{}, errors.New("adapter is shutting down")
+	}
+	if b.runtimeInfo.LeaseID != previous.LeaseID || b.runtimeInfo.Generation != previous.Generation {
+		info := b.runtimeInfo
+		b.mu.Unlock()
+		return info, nil
+	}
+	b.runtimeStale = true
+	b.mu.Unlock()
+	params := supervisor.AcquireParams{GatewayIdentity: b.cfg.GatewayIdentity(), Profile: b.cfg.Profile(), Scope: b.cfg.Supervisor.Scope}
+	info, err := b.acquireRuntime(ctx, params)
+	if err != nil {
+		return supervisor.RuntimeInfo{}, err
+	}
+	b.mu.Lock()
+	closed := b.closed
+	b.mu.Unlock()
+	if closed {
+		_ = b.runtime.ReleaseRuntime(context.Background(), info.LeaseID, info.Generation)
+		return supervisor.RuntimeInfo{}, errors.New("adapter is shutting down")
+	}
+	if err := b.replaceGateway(ctx, info); err != nil {
+		if info.LeaseID != previous.LeaseID {
+			_ = b.runtime.ReleaseRuntime(context.Background(), info.LeaseID, info.Generation)
+		}
+		return supervisor.RuntimeInfo{}, err
+	}
+	b.mu.Lock()
+	b.runtimeInfo = info
+	b.runtimeStale = false
+	b.mu.Unlock()
+	return info, nil
+}
+
+func (b *Bridge) currentRuntime() supervisor.RuntimeInfo {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.runtimeInfo
+}
+
+func (b *Bridge) configureGateway(gateway Gateway, info supervisor.RuntimeInfo) {
+	if configurer, ok := gateway.(runtimeConfigurer); ok {
+		configurer.ConfigureRuntime(info.GatewayURL, info.StatusURL)
+	}
+	if configurer, ok := gateway.(runtimeTokenConfigurer); ok {
+		configurer.ConfigureTokenRef(info.TokenRef)
+	}
+}
+
+func (b *Bridge) replaceGateway(ctx context.Context, info supervisor.RuntimeInfo) error {
+	b.mu.Lock()
+	for _, session := range b.sessions {
+		if session.busy {
+			b.mu.Unlock()
+			return fmt.Errorf("%s: active turn prevents gateway reconnect", CodeAmbiguousPreviousTurn)
+		}
+	}
+	oldGateway := b.gateway
+	factory := b.gatewayFactory
+	b.mu.Unlock()
+	if factory == nil {
+		b.configureGateway(oldGateway, info)
+		return nil
+	}
+	runtimeCfg := b.cfg
+	runtimeCfg.Gateway.URL = info.GatewayURL
+	runtimeCfg.Gateway.StatusURL = info.StatusURL
+	nextGateway := factory(runtimeCfg)
+	b.configureGateway(nextGateway, info)
+	connectCtx, cancel := context.WithTimeout(ctx, b.cfg.ConnectTimeoutDuration())
+	err := nextGateway.Connect(connectCtx)
+	cancel()
+	if err != nil {
+		nextGateway.Close()
+		return err
+	}
+	oldGateway.Close()
+	b.mu.Lock()
+	b.gateway = nextGateway
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *Bridge) heartbeatRuntime(ctx context.Context, info supervisor.RuntimeInfo) {
+	defer b.runtimeWG.Done()
+	ticker := time.NewTicker(b.cfg.SupervisorHeartbeatDuration())
+	defer ticker.Stop()
+	current := info
+	for {
+		select {
+		case <-ticker.C:
+			heartbeatCtx, cancel := context.WithTimeout(ctx, b.cfg.RPCTimeoutDuration())
+			err := b.runtime.HeartbeatLease(heartbeatCtx, current.LeaseID, current.Generation)
+			cancel()
+			if err != nil {
+				b.log("supervisor lease heartbeat failed: %v", err)
+				var coded *supervisor.SupervisorError
+				if errors.As(err, &coded) && coded != nil && (coded.Code == supervisor.CodeGenerationChanged || coded.Code == supervisor.CodeLeaseExpired || coded.Code == supervisor.CodeUnavailable || coded.Code == supervisor.CodeRuntimeUnavailable) {
+					recoverCtx, recoverCancel := context.WithTimeout(context.Background(), b.cfg.RPCTimeoutDuration())
+					if recovered, recoverErr := b.reacquireRuntime(recoverCtx, current); recoverErr == nil && recovered.LeaseID != "" {
+						current = recovered
+					}
+					recoverCancel()
+				}
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func (b *Bridge) Start(ctx context.Context) error {
@@ -146,17 +405,25 @@ func (b *Bridge) Start(ctx context.Context) error {
 		}
 		b.store = store
 	}
-	if err := hermes.HTTPStatus(ctx, b.cfg); err != nil {
-		return err
+	if b.runtime == nil {
+		if err := hermes.HTTPStatus(ctx, b.cfg); err != nil {
+			return err
+		}
+		if err := b.gateway.Connect(ctx); err != nil {
+			return err
+		}
+		b.log("gateway connected endpoint=%s", b.cfg.GatewayIdentity())
+	} else {
+		b.log("supervisor lazy runtime mode enabled endpoint=%s", b.cfg.GatewayIdentity())
 	}
-	if err := b.gateway.Connect(ctx); err != nil {
-		return err
-	}
-	b.log("gateway connected endpoint=%s", b.cfg.GatewayIdentity())
 	return nil
 }
 
 func (b *Bridge) Handle(ctx context.Context, method string, params json.RawMessage, emitter acp.Emitter) (any, *acp.RPCError) {
+	if !b.beginRequest() {
+		return nil, rpcError(acp.JSONRPCInternalError, CodeInternal, "adapter is shutting down")
+	}
+	defer b.requestWG.Done()
 	switch method {
 	case "initialize":
 		return b.initialize(), nil
@@ -215,6 +482,9 @@ func (b *Bridge) sessionNew(ctx context.Context, raw json.RawMessage) (map[strin
 	if err != nil {
 		return nil, rpcError(acp.JSONRPCInvalidParams, CodeInvalidCWD, err.Error())
 	}
+	if err := b.ensureProfile(ctx); err != nil {
+		return nil, err
+	}
 	req := map[string]any{
 		"cwd":                 cwd,
 		"source":              b.cfg.Session.Source,
@@ -258,6 +528,9 @@ func (b *Bridge) sessionResume(ctx context.Context, raw json.RawMessage) (map[st
 	params := sessionResumeParams{}
 	if err := json.Unmarshal(raw, &params); err != nil || strings.TrimSpace(params.SessionID) == "" {
 		return nil, rpcError(acp.JSONRPCInvalidParams, CodeSessionMappingNotFound, "sessionId is required")
+	}
+	if err := b.ensureProfile(ctx); err != nil {
+		return nil, err
 	}
 	stored, err := b.store.Get(params.SessionID)
 	if err != nil {
@@ -350,6 +623,10 @@ func (b *Bridge) setModel(ctx context.Context, raw json.RawMessage) (map[string]
 }
 
 func (b *Bridge) prompt(ctx context.Context, raw json.RawMessage, emitter acp.Emitter) (map[string]any, *acp.RPCError) {
+	if !b.beginPrompt() {
+		return nil, rpcError(acp.JSONRPCInternalError, CodeInternal, "adapter is shutting down")
+	}
+	defer b.promptWG.Done()
 	params := sessionPromptParams{}
 	if err := json.Unmarshal(raw, &params); err != nil || params.SessionID == "" {
 		return nil, rpcError(acp.JSONRPCInvalidParams, CodeSessionMappingNotFound, "sessionId is required")
@@ -357,6 +634,11 @@ func (b *Bridge) prompt(ctx context.Context, raw json.RawMessage, emitter acp.Em
 	text, err := textPrompt(params.Prompt)
 	if err != nil {
 		return nil, rpcError(acp.JSONRPCInvalidParams, CodeUnsupportedContent, err.Error())
+	}
+	if b.runtime != nil {
+		if err := b.ensureRuntime(ctx); err != nil {
+			return nil, mapSupervisorError(err)
+		}
 	}
 	runtimeSession, err := b.lookupRuntime(params.SessionID)
 	if err != nil {
@@ -372,6 +654,22 @@ func (b *Bridge) prompt(ctx context.Context, raw json.RawMessage, emitter acp.Em
 		b.setCancel(params.SessionID, nil)
 		_ = b.markBusy(params.SessionID, false)
 	}()
+	b.mu.Lock()
+	runtimeInfo := b.runtimeInfo
+	b.mu.Unlock()
+	if b.runtime != nil && runtimeInfo.LeaseID != "" {
+		pinCtx, pinCancel := context.WithTimeout(ctx, b.cfg.RPCTimeoutDuration())
+		if err := b.runtime.PinTurn(pinCtx, runtimeInfo.LeaseID, params.SessionID, runtimeInfo.Generation); err != nil {
+			pinCancel()
+			return nil, rpcError(acp.JSONRPCInternalError, supervisor.CodeUnavailable, err.Error())
+		}
+		pinCancel()
+		defer func() {
+			unpinCtx, unpinCancel := context.WithTimeout(context.Background(), b.cfg.RPCTimeoutDuration())
+			_ = b.runtime.UnpinTurn(unpinCtx, runtimeInfo.LeaseID, params.SessionID, runtimeInfo.Generation)
+			unpinCancel()
+		}()
+	}
 	lock, err := locking.New(b.cfg.StatePath(), b.cfg.GatewayLockKey())
 	if err != nil {
 		return nil, rpcError(acp.JSONRPCInternalError, CodeInternal, err.Error())
@@ -738,16 +1036,31 @@ func (b *Bridge) Shutdown(ctx context.Context) {
 		return
 	}
 	b.closed = true
-	active := make([]string, 0)
+	type activeSession struct {
+		liveID string
+		cancel context.CancelFunc
+	}
+	active := make([]activeSession, 0)
 	for _, session := range b.sessions {
 		if session.busy {
-			active = append(active, session.liveID)
+			active = append(active, activeSession{liveID: session.liveID, cancel: session.cancel})
 		}
 	}
 	b.mu.Unlock()
+	b.mu.Lock()
+	runtimeCancel := b.runtimeCancel
+	b.runtimeCancel = nil
+	b.mu.Unlock()
+	if runtimeCancel != nil {
+		runtimeCancel()
+	}
+	b.runtimeWG.Wait()
 	var wait sync.WaitGroup
-	for _, liveID := range active {
-		liveID := liveID
+	for _, session := range active {
+		if session.cancel != nil {
+			session.cancel()
+		}
+		liveID := session.liveID
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
@@ -757,10 +1070,64 @@ func (b *Bridge) Shutdown(ctx context.Context) {
 		}()
 	}
 	wait.Wait()
-	b.gateway.Close()
+	// ACP Server invokes Shutdown while request handlers may still be draining.
+	// Do not release the lease or close the Gateway until every prompt has run
+	// its UnpinTurn/markBusy cleanup. If a handler ignores cancellation, close
+	// the Gateway once to force its blocking I/O to return, then still wait for
+	// the cleanup boundary.
+	promptDone := make(chan struct{})
+	gatewayClosed := false
+	go func() {
+		b.requestWG.Wait()
+		b.promptWG.Wait()
+		close(promptDone)
+	}()
+	select {
+	case <-promptDone:
+	case <-ctx.Done():
+		b.log("prompt shutdown exceeded grace period; closing Gateway to unblock active handlers")
+		b.gateway.Close()
+		gatewayClosed = true
+		<-promptDone
+	}
+	b.mu.Lock()
+	runtimeInfo := b.runtimeInfo
+	b.runtimeInfo = supervisor.RuntimeInfo{}
+	b.mu.Unlock()
+	if b.runtime != nil && runtimeInfo.LeaseID != "" {
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), b.cfg.RPCTimeoutDuration())
+		_ = b.runtime.ReleaseRuntime(releaseCtx, runtimeInfo.LeaseID, runtimeInfo.Generation)
+		releaseCancel()
+	}
+	if !gatewayClosed {
+		b.gateway.Close()
+	}
 	if b.store != nil {
 		_ = b.store.Close()
 	}
+}
+
+func (b *Bridge) beginRequest() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return false
+	}
+	b.requestWG.Add(1)
+	return true
+}
+
+// beginPrompt closes the admission race between ACP dispatch and Shutdown:
+// once closed is set, no new prompt can increment promptWG after Shutdown has
+// started waiting on it.
+func (b *Bridge) beginPrompt() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return false
+	}
+	b.promptWG.Add(1)
+	return true
 }
 
 func validateCWD(raw string) (string, error) {
@@ -820,6 +1187,21 @@ func mapGatewayRPCError(err error, fallback string) *acp.RPCError {
 		return rpcError(acp.JSONRPCMethodNotFound, CodeGatewayUnsupported, err.Error())
 	}
 	return rpcError(acp.JSONRPCInternalError, fallback, err.Error())
+}
+
+func mapSupervisorError(err error) *acp.RPCError {
+	var coded *supervisor.SupervisorError
+	if errors.As(err, &coded) {
+		switch coded.Code {
+		case supervisor.CodeProfileNotFound:
+			return rpcError(acp.JSONRPCInvalidParams, CodeProfileNotFound, coded.Message)
+		case supervisor.CodeProfileLookup:
+			return rpcError(acp.JSONRPCInternalError, CodeProfileLookupFailed, coded.Message)
+		default:
+			return rpcError(acp.JSONRPCInternalError, coded.Code, coded.Message)
+		}
+	}
+	return rpcError(acp.JSONRPCInternalError, supervisor.CodeUnavailable, err.Error())
 }
 
 func firstString(value map[string]any, keys ...string) string {

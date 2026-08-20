@@ -44,4 +44,4 @@
 | 最终定稿 | Lead + 用户 | 最终方案、开放问题、负责人和下一步 | 是 |
 | 写回 | Lead / 工作区 | 产物、决定、事件、知识候选 | 是 |
 
-非 Multica 内的 Agent 如果需要读取 Issue，应通过当前可用的 Multica CLI 获取任务信息；Go ACP Adapter 只负责 ACP 与本地 Hermes Gateway 之间的协议桥接。完整职责边界见 [Multica 控制面边界](../../docs/multica-control-plane.md)。
+非 Multica 内的 Agent 如果需要读取 Issue，应通过当前可用的 Multica CLI 获取任务信息；Go ACP Adapter 通过本机 Supervisor IPC 接入 Hermes Gateway，Supervisor 独立负责 Gateway 生命周期。完整职责边界见 [Multica 控制面边界](../../docs/multica-control-plane.md)。

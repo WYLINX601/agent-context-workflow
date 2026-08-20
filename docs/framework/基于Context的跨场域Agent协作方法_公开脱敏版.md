@@ -124,7 +124,7 @@
 - **进一步讨论**：人可以快速唤起对应专家，并通过“@”带入当前 Issue 上下文；讨论结论重新回到原任务链。
 - **回流机制**：个人共创中形成的 Skills、经验或规则候选，经过验证、裁剪和授权后进入 Agent 能力库，再按角色配置给专业 Agent。
 
-> 公开参考实现：本方案中的 Multica 产品方案小队采用 Go ACP Adapter 作为公开桥接资源。Adapter 只承担 ACP 与本地 Hermes Gateway 的协议适配，不包含个人 Profile、Memory、Session 或凭据。
+> 公开参考实现：本方案中的 Multica 产品方案小队采用 Go ACP Adapter + 本机 Supervisor 作为公开接入资源。Adapter 只承担 ACP 与 Supervisor IPC 的协议适配，Supervisor 负责本地 Hermes Gateway 生命周期；两者都不包含个人 Profile、Memory、Session 或凭据。
 
 ## 让个人方法逐步转化为团队能力
 
