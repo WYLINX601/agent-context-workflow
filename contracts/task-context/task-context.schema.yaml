@@ -1,5 +1,5 @@
 $schema: "https://json-schema.org/draft/2020-12/schema"
-title: Public task context manifest
+title: Context Workflow task manifest
 type: object
 additionalProperties: false
 required: [schema_version, task_id, project_id, owner, status, objective, acceptance_criteria, context, access, created_at, expires_at, writeback]
@@ -10,32 +10,11 @@ properties:
     type: string
     pattern: "^[A-Z][A-Z0-9_-]+$"
   project_id:
-    type: [string, "null"]
+    type: string
+    minLength: 1
   owner:
     type: string
     pattern: "^[a-z][a-z0-9-]+$"
-  agent_id:
-    type: [string, "null"]
-    pattern: "^[a-z][a-z0-9-]+$"
-  execution_target:
-    type: [string, "null"]
-    enum: [local, remote, null]
-  ingress:
-    type: [object, "null"]
-    additionalProperties: false
-    required: [platform, agent_id]
-    properties:
-      platform:
-        type: string
-        pattern: "^[a-z][a-z0-9-]+$"
-      agent_id:
-        type: string
-        pattern: "^[a-z][a-z0-9-]+$"
-      profile:
-        type: [string, "null"]
-        pattern: "^[a-z][a-z0-9-]+$"
-      thread_id:
-        type: [string, "null"]
   status:
     enum: [draft, ready, active, review, done, blocked, cancelled]
   objective:
@@ -47,6 +26,7 @@ properties:
     items: {type: string, minLength: 1}
   context:
     type: array
+    minItems: 1
     items:
       type: object
       additionalProperties: false
@@ -62,11 +42,11 @@ properties:
       read:
         type: array
         uniqueItems: true
-        items: {type: string, pattern: '^(?![A-Za-z]:|/|\\\\|.*\.\.).+'}
+        items: {type: string, minLength: 1}
       write:
         type: array
         uniqueItems: true
-        items: {type: string, pattern: '^(?![A-Za-z]:|/|\\\\|.*\.\.).+'}
+        items: {type: string, minLength: 1}
       deny:
         type: array
         minItems: 4
@@ -83,11 +63,8 @@ properties:
     additionalProperties: false
     required: [event_path, summary_required]
     properties:
-      event_path: {type: string, pattern: '^events/[a-z][a-z0-9-]*/.+\.md$'}
+      event_path: {type: string, pattern: '^需求/.+/context/events/.+\.md$'}
       summary_required: {type: boolean}
-  freshness_checked_at:
-    type: [string, "null"]
-    format: date-time
   blocked_by:
     type: array
     items: {type: string}

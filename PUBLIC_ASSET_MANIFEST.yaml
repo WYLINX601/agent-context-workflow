@@ -1,0 +1,54 @@
+version: 1
+policy: allowlist
+assets:
+  - source_reference: internal context contract and approved design
+    target: README.md
+    review_status: approved
+  - source_reference: internal context contract and approved design
+    target: SKILL.md
+    review_status: approved
+  - source_reference: internal context contracts
+    target: contracts/context
+    review_status: approved
+  - source_reference: internal task-context schema and example
+    target: contracts/task-context
+    review_status: approved
+  - source_reference: internal project-context-workflow templates
+    target: templates
+    review_status: approved
+  - source_reference: internal non-sensitive minimal fixture
+    target: examples/minimal-project
+    review_status: approved
+  - source_reference: approved public architecture and workflow material
+    target: docs
+    review_status: approved
+  - source_reference: approved public squad configuration
+    target: configs/squads
+    review_status: approved
+  - source_reference: approved public squad example
+    target: examples/product-solution-squad
+    review_status: approved
+  - source_reference: approved Go ACP adapter
+    target: plugins/multica-hermes-bridge
+    review_status: approved
+  - source_reference: approved public capability candidate documentation
+    target: skills/self-evolution
+    review_status: approved
+  - source_reference: repository validation policy
+    target: scripts
+    review_status: approved
+  - source_reference: repository validation policy
+    target: requirements-dev.txt
+    review_status: approved
+  - source_reference: repository validation policy
+    target: .github/workflows/ci.yml
+    review_status: approved
+  - source_reference: public repository governance
+    target: SECURITY.md
+    review_status: approved
+  - source_reference: public repository governance
+    target: CONTRIBUTING.md
+    review_status: approved
+  - source_reference: public repository governance
+    target: LICENSE
+    review_status: approved

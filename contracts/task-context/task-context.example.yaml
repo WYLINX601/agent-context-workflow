@@ -1,0 +1,31 @@
+schema_version: 1
+task_id: EXAMPLE_DEMAND_001
+project_id: minimal-project
+owner: project-lead
+status: ready
+objective: "Prepare a reviewable onboarding brief for a fictional product."
+acceptance_criteria:
+  - "The brief names the user problem, scope and one decision for human review."
+context:
+  - path: "context/PROJECT_CONTEXT.md"
+    purpose: "Cross-demand constraints"
+  - path: "需求/example-demand/context/REQUIREMENT_CONTEXT.md"
+    purpose: "Demand-local facts"
+access:
+  read:
+    - "context/**"
+    - "需求/example-demand/**"
+  write:
+    - "需求/example-demand/输出/**"
+    - "需求/example-demand/context/events/**"
+  deny:
+    - "**/.env"
+    - "**/session/**"
+    - "**/memory/**"
+    - "**/.obsidian/**"
+created_at: "2026-08-30T09:00:00+00:00"
+expires_at: "2026-09-06T09:00:00+00:00"
+writeback:
+  event_path: "需求/example-demand/context/events/EXAMPLE_DEMAND_001.md"
+  summary_required: true
+blocked_by: []
